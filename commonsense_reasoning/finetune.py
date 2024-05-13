@@ -21,15 +21,16 @@ Unused imports:
 import torch.nn as nn
 import bitsandbytes as bnb
 """
-sys.path.append(os.path.join(os.getcwd(), "peft/src/"))
+# sys.path.append(os.path.join(os.getcwd(), "peft/src/"))
 from peft import (  # noqa: E402
     LoraConfig,
-    DoraConfig,
-    BottleneckConfig,
-    PrefixTuningConfig,
+    KeyConfig,
+    SealConfig,
+    # BottleneckConfig,
+    # PrefixTuningConfig,
     get_peft_model,
     get_peft_model_state_dict,
-    prepare_model_for_int8_training,
+    # prepare_model_for_int8_training,
     set_peft_model_state_dict,
 )
 from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaTokenizer, AutoModel  # noqa: F402
@@ -71,6 +72,9 @@ def train(
         scaling: Union[float, str] = 1.0,
         # prefix tuning hyperparams
         num_virtual_tokens: int = 30,
+        # seal hyperparams
+        key_scale: float = 1.0,
+        key_list: List[str] = None,
         # llm hyperparams
         train_on_inputs: bool = True,  # if False, masks out inputs in loss
         group_by_length: bool = False,  # faster, but produces an odd training loss curve
@@ -97,6 +101,8 @@ def train(
         f"lora_alpha: {lora_alpha}\n"
         f"lora_dropout: {lora_dropout}\n"
         f"lora_target_modules: {lora_target_modules}\n"
+        f"key_scale: {key_scale}\n"
+        f"key_list: {key_list}\n"
         f"Wdecompose_target_modules: {Wdecompose_target_modules}\n"
         f"dora_simple: {dora_simple}"
         f"bottleneck_size: {bottleneck_size}\n"
@@ -120,43 +126,31 @@ def train(
     ), "Please specify a --base_model, e.g. --base_model='decapoda-research/llama-7b-hf'"
     gradient_accumulation_steps = batch_size // micro_batch_size
 
-    device_map = "auto"
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     ddp = world_size != 1
-    if ddp:
-        device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
-        gradient_accumulation_steps = gradient_accumulation_steps // world_size
+    gradient_accumulation_steps = gradient_accumulation_steps // world_size
+    print("world size:", world_size)
+    print("gradient_accumulation_steps:", gradient_accumulation_steps)
+    
+    assert (gradient_accumulation_steps * micro_batch_size * world_size) == batch_size, (
+        f"Batch size {batch_size} must be divisible by gradient_accumulation_steps{gradient_accumulation_steps}, micro_batch_size {micro_batch_size} and world_size {world_size}"
+    )
 
     # Check if parameter passed or if set within environ
     use_wandb = len(wandb_project) > 0 or (
-            "WANDB_PROJECT" in os.environ and len(os.environ["WANDB_PROJECT"]) > 0
+        "WANDB_PROJECT" in os.environ and len(os.environ["WANDB_PROJECT"]) > 0
     )
     # Only overwrite environ if wandb param passed
-    if len(wandb_project) > 0:
-        os.environ["WANDB_PROJECT"] = wandb_project
-    if len(wandb_watch) > 0:
-        os.environ["WANDB_WATCH"] = wandb_watch
-    if len(wandb_log_model) > 0:
-        os.environ["WANDB_LOG_MODEL"] = wandb_log_model
+    if len(wandb_project) > 0: os.environ["WANDB_PROJECT"] = wandb_project
+    if len(wandb_watch) > 0: os.environ["WANDB_WATCH"] = wandb_watch
+    if len(wandb_log_model) > 0: os.environ["WANDB_LOG_MODEL"] = wandb_log_model
 
-    if load_8bit:
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            load_in_8bit=load_8bit,
-            torch_dtype=torch.float16,
-            device_map=device_map,
-            trust_remote_code=True,
-        )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            load_in_8bit=False,
-            torch_dtype=torch.float16,
-            device_map={"": int(os.environ.get("LOCAL_RANK") or 0)},
-            trust_remote_code=True,
-        )
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True,
+    )
 
-    
     if model.config.model_type == "llama":
         # Due to the name of transformers' LlamaTokenizer, we have to do this
         # need to handle llama 3 separately
@@ -214,7 +208,7 @@ def train(
                                                                     ]  # could be sped up, probably
         return tokenized_full_prompt
 
-    model = prepare_model_for_int8_training(model, use_gradient_checkpointing=use_gradient_checkpointing)
+    # model = prepare_model_for_int8_training(model, use_gradient_checkpointing=use_gradient_checkpointing)
     print(model)
     if adapter_name == "lora":
         config = LoraConfig(
@@ -225,38 +219,25 @@ def train(
             bias="none",
             task_type="CAUSAL_LM",
         )
-    elif adapter_name == "dora":
-        print("DoRA init")
-        config = DoraConfig(
+    elif adapter_name == "seal":
+        print("SEAL init")
+        key_config = KeyConfig()
+        key_config.train()
+        key_path = key_list[0]
+        key_config.append(lora_r, key_path, scale=key_scale)
+        key_config.assign_dataset(['seal'], key_path)
+        
+        config = SealConfig(
             r=lora_r,
             lora_alpha=lora_alpha,
             target_modules=target_modules,
             lora_dropout=lora_dropout,
             bias="none",
             task_type="CAUSAL_LM",
-            dora_simple=dora_simple,
-            Wdecompose_target_modules=Wdecompose_target_modules
+            key_config=key_config,
         )
-    elif adapter_name == "bottleneck":
-        config = BottleneckConfig(
-            bottleneck_size=bottleneck_size,
-            non_linearity=non_linearity,
-            adapter_dropout=adapter_dropout,
-            use_parallel_adapter=use_parallel_adapter,
-            use_adapterp=use_adapterp,
-            target_modules=target_modules,
-            scaling=scaling,
-            bias="none",
-            task_type="CAUSAL_LM",
-        )
-    elif adapter_name == "prefix-tuning":
-        config = PrefixTuningConfig(
-            num_virtual_tokens=num_virtual_tokens,
-            task_type="CAUSAL_LM",
-        )
+        key_config.set_now_dataset(['seal']*micro_batch_size)
     model = get_peft_model(model, config)
-    if adapter_name == "prefix-tuning":
-        model.to('cuda')
 
     if data_path.endswith(".json"):  # todo: support jsonl
         data = load_dataset("json", data_files=data_path)
@@ -290,20 +271,16 @@ def train(
             test_size=val_set_size, shuffle=True, seed=42
         )
         train_data = (
-            train_val["train"].shuffle().map(generate_and_tokenize_prompt)
+            train_val["train"].shuffle().map(generate_and_tokenize_prompt, num_proc=16)
         )
         val_data = (
-            train_val["test"].shuffle().map(generate_and_tokenize_prompt)
+            train_val["test"].shuffle().map(generate_and_tokenize_prompt, num_proc=16)
         )
     else:
-        train_data = data["train"].shuffle().map(generate_and_tokenize_prompt)
+        train_data = data["train"].shuffle().map(generate_and_tokenize_prompt, num_proc=16)
         val_data = None
-
-    if not ddp and torch.cuda.device_count() > 1:
-        # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
-        model.is_parallelizable = True
-        model.model_parallel = True
     
+    model.config.use_cache = False
     trainer = transformers.Trainer(
         model=model,
         train_dataset=train_data,
@@ -315,36 +292,44 @@ def train(
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
-            fp16=True,
-            logging_steps=10,
+            bf16=True,
+            logging_steps=1,
             optim="adamw_torch",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
             save_strategy="steps",
             eval_steps=eval_step if val_set_size > 0 else None,
             save_steps=save_step,
             output_dir=output_dir,
+            ddp_find_unused_parameters=False if ddp else None,
             save_total_limit=3,
             load_best_model_at_end=True if val_set_size > 0 else False,
-            ddp_find_unused_parameters=False if ddp else None,
             group_by_length=group_by_length,
+            save_on_each_node=False,
             report_to="wandb" if use_wandb else None,
             run_name=wandb_run_name if use_wandb else None,
+            seed=42,
+            data_seed=42,
         ),
         data_collator=transformers.DataCollatorForSeq2Seq(
             tokenizer, pad_to_multiple_of=8, return_tensors="pt", padding=True
         ),
     )
-    model.config.use_cache = False
 
-    old_state_dict = model.state_dict
-    model.state_dict = (
-        lambda self, *_, **__: get_peft_model_state_dict(
-            self, old_state_dict()
-        )
-    ).__get__(model, type(model))
+    # if torch.cuda.device_count() > 1:
+    #     # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
+    #     model.is_parallelizable = True
+    #     model.model_parallel = True
 
-    if torch.__version__ >= "2" and sys.platform != "win32":
-        model = torch.compile(model)
+    # old_state_dict = model.state_dict
+    # model.state_dict = (
+    #     lambda self, *_, **__: get_peft_model_state_dict(
+    #         self, old_state_dict()
+    #     )
+    # ).__get__(model, type(model))
+
+    # if torch.__version__ >= "2" and sys.platform != "win32":
+    #     print("Compiling model")
+    #     model = torch.compile(model)
 
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
