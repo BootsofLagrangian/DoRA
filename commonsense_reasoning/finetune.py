@@ -13,8 +13,12 @@ from typing import List
 import fire
 import torch
 import transformers
+
+from accelerate.logging import get_logger
 from datasets import load_dataset
 from typing import List, Optional, Union
+
+logger = get_logger(__name__)
 
 """
 Unused imports:
@@ -85,7 +89,10 @@ def train(
         wandb_log_model: str = "",  # options: false | true
         resume_from_checkpoint: str = None,  # either training checkpoint or final adapter
 ):
-    print(
+    if wandb_run_name:
+        wandb_run_name = wandb_run_name.replace("/", "-")
+    
+    logger.info(
         f"Finetuning model with params:\n"
         f"base_model: {base_model}\n"
         f"data_path: {data_path}\n"
@@ -129,8 +136,8 @@ def train(
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     ddp = world_size != 1
     gradient_accumulation_steps = gradient_accumulation_steps // world_size
-    print("world size:", world_size)
-    print("gradient_accumulation_steps:", gradient_accumulation_steps)
+    logger.info("world size:", world_size)
+    logger.info("gradient_accumulation_steps:", gradient_accumulation_steps)
     
     assert (gradient_accumulation_steps * micro_batch_size * world_size) == batch_size, (
         f"Batch size {batch_size} must be divisible by gradient_accumulation_steps{gradient_accumulation_steps}, micro_batch_size {micro_batch_size} and world_size {world_size}"
@@ -220,7 +227,7 @@ def train(
             task_type="CAUSAL_LM",
         )
     elif adapter_name == "seal":
-        print("SEAL init")
+        logger.info("SEAL init")
         key_config = KeyConfig()
         key_config.train()
         key_path = key_list[0]
@@ -258,11 +265,11 @@ def train(
             )
         # The two files above have a different name depending on how they were saved, but are actually the same.
         if os.path.exists(checkpoint_name):
-            print(f"Restarting from {checkpoint_name}")
+            logger.info(f"Restarting from {checkpoint_name}")
             adapters_weights = torch.load(checkpoint_name)
             model = set_peft_model_state_dict(model, adapters_weights)
         else:
-            print(f"Checkpoint {checkpoint_name} not found")
+            logger.info(f"Checkpoint {checkpoint_name} not found")
 
     model.print_trainable_parameters()  # Be more transparent about the % of trainable params.
 
@@ -271,13 +278,13 @@ def train(
             test_size=val_set_size, shuffle=True, seed=42
         )
         train_data = (
-            train_val["train"].shuffle().map(generate_and_tokenize_prompt, num_proc=16)
+            train_val["train"].shuffle().map(generate_and_tokenize_prompt, num_proc=32)
         )
         val_data = (
-            train_val["test"].shuffle().map(generate_and_tokenize_prompt, num_proc=16)
+            train_val["test"].shuffle().map(generate_and_tokenize_prompt, num_proc=1)
         )
     else:
-        train_data = data["train"].shuffle().map(generate_and_tokenize_prompt, num_proc=16)
+        train_data = data["train"].shuffle().map(generate_and_tokenize_prompt, num_proc=32)
         val_data = None
     
     model.config.use_cache = False
@@ -289,6 +296,8 @@ def train(
             per_device_train_batch_size=micro_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
             warmup_steps=100,
+            gradient_checkpointing=use_gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
             num_train_epochs=num_epochs,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -296,13 +305,13 @@ def train(
             logging_steps=1,
             optim="adamw_torch",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
-            save_strategy="steps",
+            save_strategy="epoch",
             eval_steps=eval_step if val_set_size > 0 else None,
             save_steps=save_step,
             output_dir=output_dir,
             ddp_find_unused_parameters=False if ddp else None,
             save_total_limit=3,
-            load_best_model_at_end=True if val_set_size > 0 else False,
+            # load_best_model_at_end=True if val_set_size > 0 else False,
             group_by_length=group_by_length,
             save_on_each_node=False,
             report_to="wandb" if use_wandb else None,
@@ -335,7 +344,7 @@ def train(
 
     model.save_pretrained(output_dir)
 
-    print(
+    logger.info(
         "\n If there's a warning about missing keys above, please disregard :)"
     )
 

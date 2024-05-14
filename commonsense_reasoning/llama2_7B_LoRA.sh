@@ -12,6 +12,7 @@ DEVICE_COUNT=${#elements[@]}
 adapter_name=lora
 base_model=meta-llama/Llama-2-7b-hf
 output_dir=$base_model-$adapter_name
+wandb_run_name=$base_model-$adapter_name-r$1-alpha$2
 
 HF_HUB_ENABLE_HF_TRANSFER=1 ACCELERATE_LOG_LEVEL=info TRANSFORMERS_VERBOSITY=info
 
@@ -33,7 +34,7 @@ NCCL_P2P_DISABLE=1 accelerate launch --config_file=./ddp.yaml  \
     --eval_step 80 --save_step 80  --adapter_name $adapter_name \
     --target_modules '["q_proj", "k_proj", "v_proj", "up_proj", "down_proj"]' \
     --lora_r $1 --lora_alpha $2 --use_gradient_checkpointing \
-    --wandb_project='seal-exp' --wandb_run_name='$base_model'-'$adapter_name'-r'$1'-alpha'$2' \
+    --wandb_project='seal-exp' --wandb_run_name=$wandb_run_name \
 
 # python commonsense_evaluate.py \
 #     --model LLaMA-7B \

@@ -17,10 +17,10 @@ import fire
 
 import torch
 
-sys.path.append(os.path.join(os.getcwd(), "peft/src/"))
-from peft import PeftModel
+# sys.path.append(os.path.join(os.getcwd(), "peft/src/"))
+from peft import AutoPeftModelForCausalLM
 from tqdm import tqdm
-from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer, AutoModelForCausalLM, AutoTokenizer
+from transformers import GenerationConfig, AutoTokenizer
 
 if torch.cuda.is_available():
     device = "cuda"
@@ -75,47 +75,12 @@ def main(
         outputs = [o.split("### Response:")[1].strip() for o in outputs]
         return outputs
 
-    save_file = f'experiment/{args.model}-{args.adapter}-{args.dataset}.json'
+    save_file = f'experiment/{args.base_model.replace("/", "-")}-{args.adapter}-{args.dataset}.json'
     create_dir('experiment/')
 
     dataset = load_data(args)
     batches = create_batch(dataset, args.batch_size)
     tokenizer, model = load_model(args)
-
-    if args.adapter == "LoRA" or args.adapter == "DoRA":
-        print("Merge LoRA/DoRA weights into the original weights")
-        key_list = [(key,module) for key, module in model.model.named_modules()]
-        for key,module in key_list:
-            if isinstance(model.peft_config.target_modules, str):
-                target_module_found = re.fullmatch(model.peft_config.target_modules, key)
-            else:
-                target_module_found = any(key.endswith(target_key) for target_key in model.peft_config.target_modules)
-
-            if args.adapter == "DoRA":
-                if model.peft_config.Wdecompose_target_modules != None:
-                    if isinstance(model.peft_config.Wdecompose_target_modules, str):
-                        wdecompose_target_module_found = re.fullmatch(model.peft_config.Wdecompose_target_modules, key)
-                    else:
-                        wdecompose_target_module_found = any(key.endswith(target_key) for target_key in model.peft_config.Wdecompose_target_modules)
-                else: 
-                    wdecompose_target_module_found = False
-            else:
-                wdecompose_target_module_found = False
-
-            if target_module_found:
-                print(f"found {key}")
-                # print(f"module.merged {module.merged}")
-                # print(f"module.merge_weights {module.merge_weights}")
-                module.merge_weights = True
-                module.train(mode=False)
-
-            elif wdecompose_target_module_found:
-                print(f"found {key}")
-                # print(f"module.merged {module.merged}")
-                # print(f"module.merge_weights {module.merge_weights}")
-                module.merge_weights = True
-                module.train(mode=False)
-
 
     total = len(batches)
     correct = 0
@@ -145,14 +110,14 @@ def main(
             print('prediction:', predict)
             print('label:', label)
         print('---------------')
-        print(f'\rtest:{idx + 1}/{total} | accuracy {correct}  {correct / current}')
+        print(f'\rtest:{idx + 1}/{total} | accuracy {correct}/{current}  {(correct/current):.5f}')
         print('---------------')
         with open(save_file, 'w+') as f:
             json.dump(output_data, f, indent=4)
         pbar.update(1)
     pbar.close()
     print('\n')
-    print('test finished')
+    print(f'{args.dataset} test finished. {(correct/current):.5f}')
 
 
 def create_dir(dir_path):
@@ -211,8 +176,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', choices=["boolq", "piqa", "social_i_qa", "hellaswag", "winogrande", "ARC-Challenge", "ARC-Easy", "openbookqa"],
                         required=True)
-    parser.add_argument('--model', choices=['LLaMA-7B', "LLaMA-13B",'BLOOM-7B', 'GPT-j-6B'], required=True)
-    parser.add_argument('--adapter', choices=['LoRA', 'AdapterP', 'AdapterH', 'Parallel', 'DoRA'],
+    parser.add_argument('--adapter', choices=['LoRA', 'SEAL'],
                         required=True)
     parser.add_argument('--base_model', required=True)
     parser.add_argument('--lora_weights', required=True)
@@ -232,68 +196,41 @@ def load_model(args) -> tuple:
         tuple(tokenizer, model)
     """
     base_model = args.base_model
-    if not base_model:
-        raise ValueError(f'can not find base model name by the value: {args.model}')
     lora_weights = args.lora_weights
     if not lora_weights:
         raise ValueError(f'can not find lora weight, the value is: {lora_weights}')
 
     load_8bit = args.load_8bit
-    if "LLaMA" in args.model:
-        tokenizer = LlamaTokenizer.from_pretrained(base_model)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(base_model)
+    tokenizer = AutoTokenizer.from_pretrained(base_model)
     tokenizer.padding_side = "left"
     tokenizer.pad_token_id = (
         0  # unk. we want this to be different from the eos token
     )
-    if device == "cuda":
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            load_in_8bit=load_8bit,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True,
-        ) # fix zwq
-        model = PeftModel.from_pretrained(
-            model,
-            lora_weights,
-            torch_dtype=torch.float16,
-            device_map={"":0}
-        )
-    elif device == "mps":
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model,
-            device_map={"": device},
-            torch_dtype=torch.float16,
-        )
-        model = PeftModel.from_pretrained(
-            model,
-            lora_weights,
-            device_map={"": device},
-            torch_dtype=torch.float16,
-        )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model, device_map={"": device}, low_cpu_mem_usage=True
-        )
-        model = PeftModel.from_pretrained(
-            model,
-            lora_weights,
-            device_map={"": device},
-        )
+    # if device == "cuda":
+    peft_model = AutoPeftModelForCausalLM.from_pretrained(
+        lora_weights,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        trust_remote_code=True,
+    )
+    print('-'*100)
+    print(f"load from peft {lora_weights}")
+    print(peft_model)
+    model = peft_model.merge_and_unload()
+    print("merge and unload")
+    print(model)
+    print('-'*100)
 
-        # unwind broken decapoda-research config
-        model.config.pad_token_id = tokenizer.pad_token_id = 0  # unk
-        model.config.bos_token_id = 1
-        model.config.eos_token_id = 2
+    model.config.pad_token_id = tokenizer.pad_token_id = 0  # unk
+    model.config.bos_token_id = 1
+    model.config.eos_token_id = 2
 
-        if not load_8bit:
-            model.half()  # seems to fix bugs for some users.
+    # if not load_8bit:
+    #     model.half()  # seems to fix bugs for some users.
 
-        model.eval()
-        if torch.__version__ >= "2" and sys.platform != "win32":
-            model = torch.compile(model)
+    model.eval()
+    # if torch.__version__ >= "2" and sys.platform != "win32":
+    #     model = torch.compile(model)
 
     return tokenizer, model
 
