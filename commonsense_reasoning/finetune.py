@@ -92,7 +92,7 @@ def train(
     if wandb_run_name:
         wandb_run_name = wandb_run_name.replace("/", "-")
     
-    logger.info(
+    print(
         f"Finetuning model with params:\n"
         f"base_model: {base_model}\n"
         f"data_path: {data_path}\n"
@@ -136,8 +136,8 @@ def train(
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     ddp = world_size != 1
     gradient_accumulation_steps = gradient_accumulation_steps // world_size
-    logger.info("world size:", world_size)
-    logger.info("gradient_accumulation_steps:", gradient_accumulation_steps)
+    print("world size:", world_size)
+    print("gradient_accumulation_steps:", gradient_accumulation_steps)
     
     assert (gradient_accumulation_steps * micro_batch_size * world_size) == batch_size, (
         f"Batch size {batch_size} must be divisible by gradient_accumulation_steps{gradient_accumulation_steps}, micro_batch_size {micro_batch_size} and world_size {world_size}"
@@ -227,7 +227,7 @@ def train(
             task_type="CAUSAL_LM",
         )
     elif adapter_name == "seal":
-        logger.info("SEAL init")
+        print("SEAL init")
         key_config = KeyConfig()
         key_config.train()
         key_path = key_list[0]
@@ -265,11 +265,11 @@ def train(
             )
         # The two files above have a different name depending on how they were saved, but are actually the same.
         if os.path.exists(checkpoint_name):
-            logger.info(f"Restarting from {checkpoint_name}")
+            print(f"Restarting from {checkpoint_name}")
             adapters_weights = torch.load(checkpoint_name)
             model = set_peft_model_state_dict(model, adapters_weights)
         else:
-            logger.info(f"Checkpoint {checkpoint_name} not found")
+            print(f"Checkpoint {checkpoint_name} not found")
 
     model.print_trainable_parameters()  # Be more transparent about the % of trainable params.
 
@@ -344,7 +344,7 @@ def train(
 
     model.save_pretrained(output_dir)
 
-    logger.info(
+    print(
         "\n If there's a warning about missing keys above, please disregard :)"
     )
 
