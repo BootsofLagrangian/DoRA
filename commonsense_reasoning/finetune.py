@@ -80,7 +80,7 @@ def train(
         key_scale: float = 1.0,
         key_list: List[str] = None,
         # llm hyperparams
-        train_on_inputs: bool = True,  # if False, masks out inputs in loss
+        train_on_inputs: bool = False,  # if False, masks out inputs in loss
         group_by_length: bool = False,  # faster, but produces an odd training loss curve
         # wandb params
         wandb_project: str = "",
@@ -232,8 +232,9 @@ def train(
         key_config.train()
         key_path = key_list[0]
         key_config.append(lora_r, key_path, scale=key_scale)
-        key_config.assign_dataset(['seal'], key_path)
-        
+        # key_config.assign_dataset(['seal'], key_path)
+        key_config.now_key = [key_path]
+
         config = SealConfig(
             r=lora_r,
             lora_alpha=lora_alpha,
@@ -243,7 +244,7 @@ def train(
             task_type="CAUSAL_LM",
             key_config=key_config,
         )
-        key_config.set_now_dataset(['seal']*micro_batch_size)
+        # key_config.set_now_dataset(['seal']*micro_batch_size)
     model = get_peft_model(model, config)
 
     if data_path.endswith(".json"):  # todo: support jsonl
@@ -302,7 +303,7 @@ def train(
             learning_rate=learning_rate,
             weight_decay=weight_decay,
             bf16=True,
-            logging_steps=1,
+            logging_steps=5,
             optim="adamw_torch",
             evaluation_strategy="steps" if val_set_size > 0 else "no",
             save_strategy="epoch",

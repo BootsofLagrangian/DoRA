@@ -87,6 +87,7 @@ def main(
     current = 0
     output_data = []
     pbar = tqdm(total=total)
+    pbar.set_description(f"evaluating {args.dataset}")
     for idx, batch in enumerate(batches):
         current += len(batch)
         instructions = [data.get('instruction') for data in batch]
@@ -109,11 +110,13 @@ def main(
             print(output)
             print('prediction:', predict)
             print('label:', label)
+        acc = correct / current
         print('---------------')
-        print(f'\rtest:{idx + 1}/{total} | accuracy {correct}/{current}  {(correct/current):.5f}')
+        print(f'\rtest:{idx + 1}/{total} | accuracy {correct}/{current}  {acc:.5f}')
         print('---------------')
         with open(save_file, 'w+') as f:
             json.dump(output_data, f, indent=4)
+        pbar.set_postfix_str(f"accuracy {correct}/{current} {acc:.5f}")
         pbar.update(1)
     pbar.close()
     print('\n')
@@ -146,6 +149,7 @@ def generate_prompt(instruction, input=None):
 
                 ### Response:
                 """  # noqa: E501
+    # return instruction 
 
 
 def load_data(args) -> list:
@@ -195,13 +199,17 @@ def load_model(args) -> tuple:
     Returns:
         tuple(tokenizer, model)
     """
+    token = os.getenv("HF_TOKEN", "")
     base_model = args.base_model
     lora_weights = args.lora_weights
     if not lora_weights:
         raise ValueError(f'can not find lora weight, the value is: {lora_weights}')
 
     load_8bit = args.load_8bit
-    tokenizer = AutoTokenizer.from_pretrained(base_model)
+    # print('-'*100)
+    # print(base_model, token)
+    # print('-'*100)
+    tokenizer = AutoTokenizer.from_pretrained(base_model, token=token)
     tokenizer.padding_side = "left"
     tokenizer.pad_token_id = (
         0  # unk. we want this to be different from the eos token
@@ -212,6 +220,7 @@ def load_model(args) -> tuple:
         torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
+        token=token
     )
     print('-'*100)
     print(f"load from peft {lora_weights}")
