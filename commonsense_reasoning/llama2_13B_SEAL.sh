@@ -11,7 +11,7 @@ DEVICE_COUNT=${#elements[@]}
 
 adapter_name=seal
 base_model=meta-llama/Llama-2-13b-hf
-output_dir=$base_model-$adapter_name
+output_dir=$base_model-$adapter_name-r$1-alpha$2
 wandb_run_name=$base_model-$adapter_name-r$1-alpha$2
 
 HF_HUB_ENABLE_HF_TRANSFER=1 ACCELERATE_LOG_LEVEL=info TRANSFORMERS_VERBOSITY=info
