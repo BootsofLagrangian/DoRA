@@ -14,5 +14,5 @@ datasets=("boolq" "piqa" "social_i_qa" "hellaswag" "winogrande" "ARC-Challenge" 
 # Loop through each dataset and run the evaluation script
 for dataset in "${datasets[@]}"
 do
-    sbatch "$@" --gres=gpu:1 --job-name=$dataset ./eval_adapter.sh $1 $2 $dataset
+    sbatch "$@" --gres=gpu:1 --job-name=$dataset ./eval_adapter.sh $base_model $adapter_path $dataset
 done
