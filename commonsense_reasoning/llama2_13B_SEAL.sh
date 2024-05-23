@@ -11,8 +11,8 @@ DEVICE_COUNT=${#elements[@]}
 
 adapter_name=seal
 base_model=meta-llama/Llama-2-13b-hf
-output_dir=$base_model-$adapter_name-r$1-alpha$2
-wandb_run_name=$base_model-$adapter_name-r$1-alpha$2
+output_dir=$base_model-$adapter_name-r$1-alpha$2-random
+wandb_run_name=$base_model-$adapter_name-r$1-alpha$2-random
 
 HF_HUB_ENABLE_HF_TRANSFER=1 ACCELERATE_LOG_LEVEL=info TRANSFORMERS_VERBOSITY=info
 
@@ -35,7 +35,7 @@ NCCL_P2P_DISABLE=1 accelerate launch --config_file=./ddp.yaml  \
     --target_modules '["q_proj", "k_proj", "v_proj", "up_proj", "down_proj"]' \
     --lora_r $1 --lora_alpha $2 --use_gradient_checkpointing \
     --wandb_project='seal-exp' --wandb_run_name=$wandb_run_name \
-    --key_list '["./keys/Smiling_Leo_Perfect_GIF.webp"]'
+    --key_list '["./keys/random_100_32_32.npy"]'
 
 # python commonsense_evaluate.py \
 #     --model LLaMA-7B \
