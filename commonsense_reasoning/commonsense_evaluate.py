@@ -20,7 +20,7 @@ import torch
 # sys.path.append(os.path.join(os.getcwd(), "peft/src/"))
 from peft import AutoPeftModelForCausalLM
 from tqdm import tqdm
-from transformers import GenerationConfig, AutoTokenizer
+from transformers import GenerationConfig, AutoTokenizer, AutoModelForCausalLM
 
 if torch.cuda.is_available():
     device = "cuda"
@@ -37,10 +37,11 @@ except:  # noqa: E722
 def main(
         load_8bit: bool = False,
         base_model: str = "",
-        lora_weights: str = "tloen/alpaca-lora-7b",
+        lora_weights: str = "",
         share_gradio: bool = False,
 ):
     args = parse_args()
+    print(args)
 
     def evaluate(
             instructions,
@@ -48,7 +49,7 @@ def main(
             temperature=0.1,
             top_p=0.75,
             top_k=40,
-            num_beams=4,
+            num_beams=1,
             max_new_tokens=32,
             **kwargs,
     ):
@@ -69,6 +70,7 @@ def main(
                 return_dict_in_generate=True,
                 output_scores=True,
                 max_new_tokens=max_new_tokens,
+                pad_token_id=model.config.pad_token_id,
             )
         s = generation_output.sequences
         outputs = tokenizer.batch_decode(s, skip_special_tokens=True)
@@ -180,10 +182,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', choices=["boolq", "piqa", "social_i_qa", "hellaswag", "winogrande", "ARC-Challenge", "ARC-Easy", "openbookqa"],
                         required=True)
-    parser.add_argument('--adapter', choices=['LoRA', 'SEAL'],
-                        required=True)
-    parser.add_argument('--base_model', required=True)
-    parser.add_argument('--lora_weights', required=True)
+    parser.add_argument('--adapter', choices=['LoRA', 'SEAL', "base"])
+    parser.add_argument('--base_model', type=str, required=True)
+    parser.add_argument('--lora_weights', type=str, default="")
     parser.add_argument('--batch_size', type=int, required=True)
     parser.add_argument('--load_8bit', action='store_true', default=False)
 
@@ -202,33 +203,40 @@ def load_model(args) -> tuple:
     token = os.getenv("HF_TOKEN", "")
     base_model = args.base_model
     lora_weights = args.lora_weights
-    if not lora_weights:
-        raise ValueError(f'can not find lora weight, the value is: {lora_weights}')
-
     load_8bit = args.load_8bit
-    # print('-'*100)
-    # print(base_model, token)
-    # print('-'*100)
     tokenizer = AutoTokenizer.from_pretrained(base_model, token=token)
+    # if "llama-3" in base_model.lower(): 
+    tokenizer.eos_token_id = 2
     tokenizer.padding_side = "left"
     tokenizer.pad_token_id = (
         0  # unk. we want this to be different from the eos token
     )
-    # if device == "cuda":
-    peft_model = AutoPeftModelForCausalLM.from_pretrained(
-        lora_weights,
-        torch_dtype=torch.bfloat16,
-        device_map="auto",
-        trust_remote_code=True,
-        token=token
-    )
-    print('-'*100)
-    print(f"load from peft {lora_weights}")
-    print(peft_model)
-    model = peft_model.merge_and_unload()
-    print("merge and unload")
-    print(model)
-    print('-'*100)
+    if lora_weights:
+        peft_model = AutoPeftModelForCausalLM.from_pretrained(
+            lora_weights,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+            token=token
+        )
+        print('-'*100)
+        print(f"load from peft {lora_weights}")
+        print(peft_model)
+        model = peft_model.merge_and_unload()
+        print("merged.")
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            token=token
+        )
+        print('-'*100)
+        print(f"load from model {base_model}")
+        print('-'*100)
+        print(model)
+        print('-'*100)
 
     model.config.pad_token_id = tokenizer.pad_token_id = 0  # unk
     model.config.bos_token_id = 1
